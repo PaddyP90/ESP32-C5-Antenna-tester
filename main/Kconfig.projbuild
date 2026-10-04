@@ -1,0 +1,49 @@
+menu "Antenna tuner"
+
+    choice TUNER_ROLE
+        prompt "Role of this board"
+        default ROLE_METER
+        help
+            Flash one board as TX (beacon source) and one as METER
+            (the board your antenna under test is connected to).
+
+        config ROLE_TX
+            bool "TX - transmits probe packets"
+        config ROLE_METER
+            bool "METER - measures RSSI and reports over USB serial"
+    endchoice
+
+    config TUNER_COUNTRY
+        string "Wi-Fi country code"
+        default "IN"
+        help
+            Sets the regulatory domain (channels / power limits).
+
+    config TUNER_TX_POWER_QDBM
+        int "TX power in 0.25 dBm units (TX role)"
+        range 8 80
+        default 40
+        help
+            40 = 10 dBm. Lower this if the boards are close together
+            and the meter saturates.
+
+    config TUNER_BUTTON_GPIO
+        int "Mode button GPIO (TX role)"
+        default 28
+        help
+            Active-low button. Default is the BOOT button on most C5 boards.
+            Cycles: sweep -> lock 2.4 GHz (ch 6) -> lock 5 GHz (ch 149).
+
+    config TUNER_DWELL_MS
+        int "Sweep dwell per channel (ms)"
+        range 100 2000
+        default 300
+
+    config TUNER_METER_HT40
+        bool "METER receives in HT40 mode (METER role)"
+        default n
+        help
+            Lets the meter decode both 20 and 40 MHz frames from the TX.
+            Turn on only when you want to test the TX at 40 MHz.
+
+endmenu
