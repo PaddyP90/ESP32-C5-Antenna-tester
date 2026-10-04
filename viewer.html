@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>C5 Antenna Tuner Viewer</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { --bg:#0f1417; --panel:#182025; --fg:#e6edf0; --dim:#8a9aa3; --cur:#4cd3a5; --ref:#f2b84b; --peak:#5b6b74; --grid:#26323a; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.4 system-ui,sans-serif; padding:16px; }
+  h1 { font-size:18px; margin:0 0 12px; font-weight:600; }
+  .bar { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:12px; }
+  button { background:var(--panel); color:var(--fg); border:1px solid var(--grid); padding:7px 12px; border-radius:6px; cursor:pointer; font:inherit; }
+  button:hover { border-color:var(--cur); }
+  #status { color:var(--dim); margin-left:6px; }
+  .grid { display:grid; grid-template-columns: 1fr; gap:12px; }
+  .card { background:var(--panel); border-radius:8px; padding:12px; }
+  .card h2 { font-size:12px; text-transform:uppercase; letter-spacing:.06em; color:var(--dim); margin:0 0 8px; font-weight:600; }
+  canvas { width:100%; display:block; }
+  #big { font-size:56px; font-weight:700; font-variant-numeric:tabular-nums; }
+  #bigsub { color:var(--dim); }
+  .legend span { margin-right:14px; color:var(--dim); }
+  .legend i { display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:5px; vertical-align:-1px; }
+  select, input { background:var(--bg); color:var(--fg); border:1px solid var(--grid); border-radius:6px; padding:5px 8px; font:inherit; }
+  label { color:var(--dim); }
+  .warn { color:var(--ref); }
+</style>
+</head>
+<body>
+<h1>C5 Antenna Tuner</h1>
+<div class="bar">
+  <button id="conn">Connect METER (USB serial)</button>
+  <button id="connTx">Connect TX (control)</button>
+  <button id="snap">Save current sweep as reference</button>
+  <button id="clr">Clear</button>
+  <span id="status">Not connected. Needs Chrome or Edge.</span>
+</div>
+<div class="grid">
+  <div class="card" id="txcard">
+    <h2>TX control</h2>
+    <div class="bar">
+      <label>Channel <select id="chsel"></select></label>
+      <button id="lock">Lock channel</button>
+      <button id="sweepBtn">Sweep all</button>
+      <label>Bandwidth <select id="bwsel"><option value="20">20 MHz</option><option value="40">40 MHz</option></select></label>
+      <label>Power <input id="pw" type="number" min="2" max="20" value="10" style="width:56px"> dBm</label>
+      <button id="setpw">Set</button>
+    </div>
+    <div id="txlog" style="color:var(--dim);font-size:12px;min-height:16px">TX not connected. Connect the TX board's USB port to send commands.</div>
+  </div>
+  <div class="card">
+    <h2>Live (lock mode)</h2>
+    <div id="big">&ndash;</div>
+    <div id="bigsub">dBm &middot; waiting for lock-mode data</div>
+    <canvas id="hist" height="120"></canvas>
+  </div>
+  <div class="card">
+    <h2>Sweep: RSSI per channel</h2>
+    <canvas id="sweep" height="260"></canvas>
+    <div class="legend">
+      <span><i style="background:var(--cur)"></i>current</span>
+      <span><i style="background:var(--ref)"></i>reference</span>
+      <span><i style="background:var(--peak)"></i>peak hold</span>
+    </div>
+  </div>
+</div>
+<script>
+// Must match the channel list in main.c
+const CH = [1,2,3,4,5,6,7,8,9,10,11,12,13,36,40,44,48,149,153,157,161,165];
+const freq = c => c <= 14 ? 2407 + 5*c : 5000 + 5*c;
+const YMIN = -100, YMAX = -20;
+
+let cur = {}, ref = null, peak = {}, hist = [];
+const $ = id => document.getElementById(id);
+
+function fit(cv) {
+  const r = cv.getBoundingClientRect(), d = devicePixelRatio || 1;
+  cv.width = r.width * d; cv.height = cv.getAttribute('height') * d;
+  const g = cv.getContext('2d'); g.scale(d, d);
+  return [g, r.width, +cv.getAttribute('height')];
+}
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+
+function drawSweep() {
+  const [g, W, H] = fit($('sweep'));
+  const L = 38, R = 8, T = 8, B = 38, pw = W - L - R, ph = H - T - B;
+  const y = v => T + ph * (1 - (Math.max(YMIN, Math.min(YMAX, v)) - YMIN) / (YMAX - YMIN));
+  const slot = pw / CH.length;
+  g.font = '11px system-ui'; g.fillStyle = css('--dim'); g.strokeStyle = css('--grid');
+  for (let v = YMIN; v <= YMAX; v += 20) {
+    g.beginPath(); g.moveTo(L, y(v)); g.lineTo(W - R, y(v)); g.stroke();
+    g.fillText(v, 6, y(v) + 4);
+  }
+  CH.forEach((c, i) => {
+    const x = L + slot * (i + .5);
+    g.save(); g.translate(x, H - B + 12); g.rotate(-Math.PI / 4); g.textAlign = 'right';
+    g.fillText(c + ' (' + freq(c) + ')', 0, 0); g.restore();
+  });
+  const line = (data, color, width) => {
+    g.strokeStyle = color; g.lineWidth = width; g.beginPath(); let pen = false;
+    CH.forEach((c, i) => {
+      if (data[c] == null) { pen = false; return; }
+      const x = L + slot * (i + .5);
+      pen ? g.lineTo(x, y(data[c])) : g.moveTo(x, y(data[c])); pen = true;
+    });
+    g.stroke();
+    g.fillStyle = color;
+    CH.forEach((c, i) => { if (data[c] != null) { g.beginPath(); g.arc(L + slot * (i + .5), y(data[c]), 3, 0, 7); g.fill(); } });
+  };
+  line(peak, css('--peak'), 1);
+  if (ref) line(ref, css('--ref'), 2);
+  line(cur, css('--cur'), 2);
+  // divider between 2.4 and 5 GHz
+  const k = CH.findIndex(c => c > 14);
+  g.strokeStyle = css('--dim'); g.setLineDash([4, 4]);
+  g.beginPath(); g.moveTo(L + slot * k, T); g.lineTo(L + slot * k, T + ph); g.stroke(); g.setLineDash([]);
+}
+
+function drawHist() {
+  const [g, W, H] = fit($('hist'));
+  const y = v => H * (1 - (Math.max(YMIN, Math.min(YMAX, v)) - YMIN) / (YMAX - YMIN));
+  g.strokeStyle = css('--cur'); g.lineWidth = 2; g.beginPath();
+  hist.forEach((v, i) => { const x = W * i / 300; i ? g.lineTo(x, y(v)) : g.moveTo(x, y(v)); });
+  g.stroke();
+}
+
+function handle(line) {
+  const f = line.trim().split(',');
+  if (f.length !== 6 || (f[0] !== 'S' && f[0] !== 'L')) return;
+  const ch = +f[1], avg = +f[3], n = +f[5];
+  if (f[0] === 'S') {
+    cur[ch] = avg;
+    if (peak[ch] == null || avg > peak[ch]) peak[ch] = avg;
+    drawSweep();
+  } else {
+    $('big').textContent = avg.toFixed(1);
+    $('bigsub').textContent = 'dBm · ch ' + ch + ' (' + freq(ch) + ' MHz) · ' + n + ' pkts';
+    hist.push(avg); if (hist.length > 300) hist.shift();
+    drawHist();
+  }
+}
+
+async function openPort(onLine, statusMsg) {
+  if (!('serial' in navigator)) { $('status').textContent = 'Web Serial not supported. Use Chrome or Edge.'; return null; }
+  const port = await navigator.serial.requestPort();
+  await port.open({ baudRate: 115200 });
+  $('status').textContent = statusMsg;
+  const dec = new TextDecoderStream();
+  port.readable.pipeTo(dec.writable);
+  const rd = dec.readable.getReader();
+  (async () => {
+    let buf = '';
+    for (;;) {
+      const { value, done } = await rd.read();
+      if (done) break;
+      buf += value;
+      let i;
+      while ((i = buf.indexOf('\n')) >= 0) { onLine(buf.slice(0, i)); buf = buf.slice(i + 1); }
+    }
+  })();
+  return port;
+}
+
+async function connect() {
+  try { await openPort(handle, 'METER connected'); }
+  catch (e) { $('status').textContent = 'Error: ' + e.message; }
+}
+
+let txWriter = null;
+async function connectTx() {
+  try {
+    const port = await openPort(l => { if (l.startsWith('#')) $('txlog').textContent = l.trim(); }, 'TX connected');
+    if (!port) return;
+    const enc = new TextEncoderStream();
+    enc.readable.pipeTo(port.writable);
+    txWriter = enc.writable.getWriter();
+    send('STATUS');
+  } catch (e) { $('status').textContent = 'Error: ' + e.message; }
+}
+function send(cmd) {
+  if (!txWriter) { $('txlog').textContent = 'Connect the TX board first.'; return; }
+  txWriter.write(cmd + '\n');
+}
+
+CH.forEach(c => { const o = document.createElement('option'); o.value = c; o.textContent = c + ' (' + freq(c) + ' MHz)'; $('chsel').appendChild(o); });
+$('chsel').value = 161;
+$('connTx').onclick = connectTx;
+$('lock').onclick = () => { send('BW ' + $('bwsel').value); send('CH ' + $('chsel').value); };
+$('sweepBtn').onclick = () => { send('BW ' + $('bwsel').value); send('SWEEP'); };
+$('bwsel').onchange = () => send('BW ' + $('bwsel').value);
+$('setpw').onclick = () => send('POWER ' + $('pw').value);
+
+$('conn').onclick = connect;
+$('snap').onclick = () => { ref = { ...cur }; drawSweep(); };
+$('clr').onclick = () => { cur = {}; ref = null; peak = {}; hist = []; $('big').textContent = '–'; drawSweep(); drawHist(); };
+addEventListener('resize', () => { drawSweep(); drawHist(); });
+drawSweep(); drawHist();
+</script>
+</body>
+</html>
